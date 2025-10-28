@@ -85,3 +85,36 @@ uv run pos-ecod --demo   # 가짜 이상치 주입
 ## 빠른 데모 조합 예시
 - 빠르게 ALERT 보기: `uv run pos-ecod --mock mock/pos_hw_metrics_anomaly.csv --sustain 2/3`
 - 더 짧은 baseline/window: `uv run pos-ecod --mock mock/pos_hw_metrics_anomaly.csv --baseline 20 --window 3`
+
+## 수집/특징 항목 설명
+아래 항목들을 샘플 단위로 수집한 뒤, 윈도(window) 단위로 집계하여 ECOD에 입력합니다.
+
+**Raw 샘플 메트릭**
+- `cpu_total_pct`: 전체 CPU 사용률(%) — `psutil.cpu_percent`. 높은 값은 부하를 의미합니다. src/pos_ecod/agent.py:100
+- `cpu_iowait_pct`: CPU가 I/O 대기 중인 시간 비율(%) — 디스크 병목 신호. src/pos_ecod/agent.py:101
+- `mem_used_pct`: 물리 메모리 사용률(%) — 메모리 압박 신호. src/pos_ecod/agent.py:102
+- `swap_used_pct`: 스왑 사용률(%) — 스왑 사용 증가 시 지연 위험. src/pos_ecod/agent.py:103
+- `cpu_temp_c`: CPU 온도(섭씨) — 과열 시 성능 저하/쓰로틀링 가능. src/pos_ecod/agent.py:104
+- `disk_await_ms`: 디스크 I/O 평균 대기시간(ms/IO) — psutil 디스크 카운터로 추정. src/pos_ecod/agent.py:105
+- `fs_used_pct_root`: 루트 파일시스템 사용률(%) — 가용 공간 부족 위험. src/pos_ecod/agent.py:106
+- `nic_err_rate`: 네트워크 인터페이스 오류율(비율) — 현재 MVP에선 placeholder. src/pos_ecod/agent.py:107
+- `load1`: 시스템 1분 load average — CPU 대기열의 대략적 지표. src/pos_ecod/agent.py:108
+
+참고: mock CSV에는 위 항목 대부분이 포함되어 있으며(`mock/README.md`), `load1`은 mock 재생 시 0으로 채웁니다.
+
+**윈도 집계 특징(ECOD 입력)**
+- `cpu_total_pct_p95`: 샘플들의 95퍼센타일 CPU 사용률 — 스파이크 내성 있도록. src/pos_ecod/agent.py:131
+- `cpu_iowait_pct_p95`: 95퍼센타일 I/O wait — 간헐적 I/O 병목 반영. src/pos_ecod/agent.py:132
+- `mem_used_pct_p95`: 95퍼센타일 메모리 사용률 — 순간 치솟음 반영. src/pos_ecod/agent.py:133
+- `swap_used_pct_p95`: 95퍼센타일 스왑 사용률 — 스왑 급증 포착. src/pos_ecod/agent.py:134
+- `load1_max`: 윈도 내 최대 load1 — 부하 피크 반영. src/pos_ecod/agent.py:135
+- `cpu_temp_c_max`: 윈도 내 최대 CPU 온도 — 과열 피크 포착. src/pos_ecod/agent.py:136
+- `disk_await_ms_p95`: 95퍼센타일 디스크 대기시간 — tail latency에 민감. src/pos_ecod/agent.py:137
+- `fs_used_pct_root_p95`: 95퍼센타일 루트 FS 사용률 — 지속적 공간 압박. src/pos_ecod/agent.py:138
+- `nic_err_rate_max`: 윈도 내 최대 NIC 오류율 — 간헐적 네트워크 이슈. src/pos_ecod/agent.py:139
+
+**파생 특징(윈도 기반)**
+- `io_saturation`: `min(1.0, disk_await_ms_p95 / 100.0)` — 디스크 포화 근사(1.0은 강한 포화). src/pos_ecod/agent.py:141
+- `thermal_pressure`: `max(0, (cpu_temp_c_max - 70) / 15)` — 70℃ 이상 온도 초과분을 압력으로 환산. src/pos_ecod/agent.py:145
+
+이 집계/파생 특징들의 벡터를 표준화(`StandardScaler`) 후 ECOD에 입력하여 스코어를 계산합니다. baseline 구간 스코어의 `threshold_pct` 백분위를 임계값으로 사용하여 이상 여부를 판정합니다. src/pos_ecod/agent.py:167
